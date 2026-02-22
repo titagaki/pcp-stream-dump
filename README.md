@@ -92,3 +92,8 @@ PeerCast の PCP ストリーム受信プロトコルは、HTTP/1.0 アップグ
   rm -f dump.flv && ./pcp-dump localhost:7144 <channel-id> dump.flv
   ```
 - チャンネルIDは必ず32文字の16進数文字列で指定してください。PeerCastの管理画面などで確認できます。
+
+## License
+
+This project is licensed under the GNU General Public License v3.0.
+Portions of this software are Copyright (C) 2026 ITAGAKI Takayuki
