@@ -17,9 +17,6 @@ import (
 func handle200(conn net.Conn, br *bufio.Reader, cfg config, outFile *os.File, doneCh <-chan struct{}) error {
 	log.Printf("[200] PCP ハンドシェイク開始")
 
-	if err := sendPCPMagic(conn); err != nil {
-		return err
-	}
 	if err := sendHelo(conn, cfg); err != nil {
 		return err
 	}
@@ -48,9 +45,6 @@ func handle200(conn net.Conn, br *bufio.Reader, cfg config, outFile *os.File, do
 func handle503(conn net.Conn, br *bufio.Reader, cfg config, outFile *os.File, doneCh <-chan struct{}, depth int) error {
 	log.Printf("[503] リダイレクト先ノードを探索中...")
 
-	if err := sendPCPMagic(conn); err != nil {
-		return err
-	}
 	if err := sendHelo(conn, cfg); err != nil {
 		return err
 	}
@@ -85,18 +79,8 @@ func handle503(conn net.Conn, br *bufio.Reader, cfg config, outFile *os.File, do
 	}
 }
 
-// sendPCPMagic は PCP マジックアトム（pcp\n、ペイロードなし）を送信する。
-func sendPCPMagic(w net.Conn) error {
-	magic := pcp.NewEmptyAtom(pcp.PCPConnect)
-	log.Printf("[send] >> PCPConnect マジックアトム (pcp\\n)")
-	if err := magic.Write(w); err != nil {
-		return fmt.Errorf("PCPConnect 送信失敗: %w", err)
-	}
-	return nil
-}
-
 // sendHelo は helo コンテナアトムを送信する。
-// agnt（エージェント名）、bcid（チャンネルID）、sess（ランダムセッションID）を含む。
+// agnt（エージェント名）、ver（バージョン）、sid（セッションID）、bcid（チャンネルID）を含む。
 func sendHelo(w net.Conn, cfg config) error {
 	// ランダムなセッションID を生成
 	var sessID pcp.GnuID
@@ -107,8 +91,9 @@ func sendHelo(w net.Conn, cfg config) error {
 	heloAtom := pcp.NewParentAtom(
 		pcp.PCPHelo,
 		pcp.NewStringAtom(pcp.PCPHeloAgent, agentName),
-		pcp.NewIDAtom(pcp.PCPHeloBCID, cfg.channelID),
+		pcp.NewIntAtom(pcp.PCPHeloVersion, 1218),
 		pcp.NewIDAtom(pcp.PCPHeloSessionID, sessID),
+		pcp.NewIDAtom(pcp.PCPHeloBCID, cfg.channelID),
 	)
 	log.Printf("[send] >>")
 	logAtom(heloAtom, "       ")

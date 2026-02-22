@@ -30,18 +30,18 @@ pcp-dump <host:port> <channel-id> <output-file>
 |---|---|---|
 | `host:port` | 接続先 PeerCastノードのアドレスとポート | `localhost:7144` |
 | `channel-id` | チャンネルID（32文字の16進数文字列） | `0123456789abcdef0123456789abcdef` |
-| `output-file` | ダンプ先ファイルパス | `dump.wmv` |
+| `output-file` | ダンプ先ファイルパス | `dump.flv` |
 
 ### 実行例
 
 ```sh
-./pcp-dump localhost:7144 0123456789abcdef0123456789abcdef dump.wmv
+./pcp-dump localhost:7144 0123456789abcdef0123456789abcdef dump.flv
 ```
 
 `go run` で直接実行することもできます。
 
 ```sh
-go run ./cmd/pcp-dump localhost:7144 0123456789abcdef0123456789abcdef dump.wmv
+go run ./cmd/pcp-dump localhost:7144 0123456789abcdef0123456789abcdef dump.flv
 ```
 
 ### 停止
@@ -56,16 +56,39 @@ go run ./cmd/pcp-dump localhost:7144 0123456789abcdef0123456789abcdef dump.wmv
 
 ## 動作の概要
 
-1. 指定アドレスへ TCP 接続を確立し、PCP ハンドシェイクを行う
-2. `helo` コンテナ（エージェント名・チャンネルID）を送信する
-3. `get` コンテナでストリームを要求する
-4. PCP アトムを継続的に読み込み、`data` アトムのペイロードを出力ファイルに追記する
-5. 進捗（書き込み済みバイト数）を5秒ごとにログ出力する
+PeerCast の PCP ストリーム受信プロトコルは、HTTP/1.0 アップグレード経由で行われます。
+
+### 接続フロー
+
+1. 指定アドレスへ TCP 接続を確立する
+2. HTTP リクエストを送信する
+   ```
+   GET /channel/<channelIDHex> HTTP/1.0
+   x-peercast-pcp:1
+   ```
+3. HTTP レスポンスのステータスコードで分岐する
+
+#### 200 OK（ストリーム配信中）
+
+4. `helo` コンテナ（`agnt` / `ver` / `sid` / `bcid`）を送信する
+5. サーバーから `oleh`、続いて `ok` アトムを受信する
+6. PCP アトムを継続的に読み込み、`pkt > data` アトムのペイロードを出力ファイルに追記する
+7. 進捗（書き込み済みバイト数）を5秒ごとにログ出力する
+
+#### 503 Service Unavailable（リレー先へリダイレクト）
+
+4. `helo` コンテナを送信する
+5. サーバーから `host` アトムで接続候補ノード一覧を受信する
+6. `quit` アトム受信後、先頭の候補ノードへ再接続する（最大8回）
+
+#### 404 Not Found
+
+チャンネルが存在しないためエラー終了する。
 
 ## 注意事項
 
 - 出力ファイルは**追記モード**で開きます。毎回新規にダンプしたい場合は実行前にファイルを削除してください。
   ```sh
-  rm -f dump.wmv && ./pcp-dump localhost:7144 <channel-id> dump.wmv
+  rm -f dump.flv && ./pcp-dump localhost:7144 <channel-id> dump.flv
   ```
 - チャンネルIDは必ず32文字の16進数文字列で指定してください。PeerCastの管理画面などで確認できます。
