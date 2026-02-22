@@ -50,7 +50,11 @@ func handle503(conn net.Conn, br *bufio.Reader, cfg config, outFile *os.File, do
 	}
 
 	// PCP_HOST または PCP_QUIT が来るまでアトムを読む
-	var hosts []string
+	type hostEntry struct {
+		addr     string
+		canRelay bool
+	}
+	var hosts []hostEntry
 	for {
 		atom, err := pcp.ReadAtom(br)
 		if err != nil {
@@ -61,18 +65,26 @@ func handle503(conn net.Conn, br *bufio.Reader, cfg config, outFile *os.File, do
 
 		switch atom.Tag {
 		case pcp.PCPHost:
-			if host := parseHostAtom(atom); host != "" {
-				log.Printf("[503] リダイレクト先候補: %s", host)
-				hosts = append(hosts, host)
+			addr, canRelay := parseHostAtom(atom)
+			if addr != "" {
+				log.Printf("[503] リダイレクト先候補: %s (relay=%v)", addr, canRelay)
+				hosts = append(hosts, hostEntry{addr, canRelay})
 			}
 		case pcp.PCPQuit:
 			log.Printf("[503] PCP_QUIT 受信、候補ノード数: %d", len(hosts))
 			if len(hosts) == 0 {
 				return fmt.Errorf("リダイレクト先ノードが見つかりませんでした")
 			}
-			// 先頭の候補ノードへ再接続
+			// リレー可能なノードを優先し、先頭の候補へ再接続
+			selected := hosts[0].addr
+			for _, h := range hosts {
+				if h.canRelay {
+					selected = h.addr
+					break
+				}
+			}
 			newCfg := cfg
-			newCfg.addr = hosts[0]
+			newCfg.addr = selected
 			log.Printf("[503] %s へ再接続します", newCfg.addr)
 			return connect(newCfg, outFile, doneCh, depth+1)
 		}
@@ -103,39 +115,74 @@ func sendHelo(w net.Conn, cfg config) error {
 	return nil
 }
 
-// parseHostAtom は PCP_HOST コンテナアトムから "ip:port" 文字列を取り出す。
-// IP は little-endian uint32、ポートは little-endian uint16 で格納されている。
-func parseHostAtom(atom *pcp.Atom) string {
-	var ipUint32 uint32
-	var port uint16
-	hasIP, hasPort := false, false
+// parseHostAtom は PCP_HOST コンテナアトムから接続先アドレスとリレー可否を返す。
+//
+// PCP_HOST には IP/port ペアが最大2組含まれる（先頭がグローバルIP、2番目がローカルIP）。
+// C++ 実装の readHostAtoms と同様に ipNum でインデックス管理し、先頭ペアを優先する。
+// 0.0.0.0 やプライベートアドレスはスキップして最初の有効なグローバルIPを返す。
+func parseHostAtom(atom *pcp.Atom) (addr string, canRelay bool) {
+	type pair struct {
+		ip   uint32
+		port uint16
+	}
+	var pairs [2]pair
+	ipNum := 0
 
 	for _, child := range atom.Children() {
 		switch child.Tag {
 		case pcp.PCPHostIP:
-			v, err := child.GetInt()
-			if err == nil {
-				ipUint32 = v
-				hasIP = true
+			if ipNum < 2 {
+				if v, err := child.GetInt(); err == nil {
+					pairs[ipNum].ip = v
+				}
 			}
 		case pcp.PCPHostPort:
-			v, err := child.GetShort()
-			if err == nil {
-				port = v
-				hasPort = true
+			if ipNum < 2 {
+				if v, err := child.GetShort(); err == nil {
+					pairs[ipNum].port = v
+					ipNum++
+				}
+			}
+		case pcp.PCPHostFlags1:
+			if v, err := child.GetByte(); err == nil {
+				const flagRelay = 0x02
+				canRelay = v&flagRelay != 0
 			}
 		}
 	}
 
-	if !hasIP || !hasPort || port == 0 {
-		return ""
+	// 先頭ペアから有効なグローバルIPを探す
+	for i := 0; i < ipNum; i++ {
+		p := pairs[i]
+		if p.ip == 0 || p.port == 0 {
+			continue
+		}
+		// little-endian uint32 → big-endian バイト列 → net.IP
+		ipBytes := make([]byte, 4)
+		binary.BigEndian.PutUint32(ipBytes, p.ip)
+		ip := net.IP(ipBytes)
+		if isGlobalIP(ip) {
+			return fmt.Sprintf("%s:%d", ip.String(), p.port), canRelay
+		}
 	}
+	return "", canRelay
+}
 
-	// PCP の IPv4 は little-endian uint32 で格納されているため
-	// big-endian に変換して net.IP を構築する
-	ipBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(ipBytes, ipUint32)
-	ip := net.IP(ipBytes)
-
-	return fmt.Sprintf("%s:%d", ip.String(), port)
+// isGlobalIP はプライベートアドレスおよびループバックアドレスを除いたグローバルIPかどうかを返す。
+func isGlobalIP(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() {
+		return false
+	}
+	private := []string{
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+	}
+	for _, cidr := range private {
+		_, block, _ := net.ParseCIDR(cidr)
+		if block.Contains(ip) {
+			return false
+		}
+	}
+	return true
 }
