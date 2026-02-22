@@ -1,0 +1,20 @@
+# ビルド成果物（ルート直下のバイナリのみ）
+/pcp-dump
+/pcp-dump.exe
+
+# go build のデフォルト出力（モジュール名と一致する場合）
+/pcp-stream-dump
+/pcp-stream-dump.exe
+
+# ダンプファイル
+*.wmv
+*.flv
+*.mkv
+*.mp4
+*.ts
+*.dump
+
+# Go ツールチェーン
+*.test
+*.out
+/vendor/
